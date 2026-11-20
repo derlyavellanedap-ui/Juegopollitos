@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Carrera de Pollitos ULTIMATE</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap');
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Nunito', sans-serif;
+            overflow: hidden;
+            background-color: #1e293b;
+        }
+
+        #game-container { position: relative; overflow: hidden; }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        /* Panel Lateral */
+        .control-panel { background-color: #fff9e6; border-left: 6px solid #4a3b32; }
+
+        .btn-add {
+            background-color: #4ade80; border: 4px solid #166534; color: #14532d;
+            box-shadow: 0 4px 0 #166534; transition: all 0.1s;
+        }
+        .btn-add:active { transform: translateY(4px); box-shadow: 0 0 0 #166534; }
+        .btn-add:disabled { background-color: #9ca3af; border-color: #4b5563; box-shadow: 0 4px 0 #4b5563; }
+
+        .pollito-card {
+            background-color: white; border: 3px solid #cbd5e1; border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+        .pollito-card.is-top { border-color: #fbbf24; background-color: #fef3c7; }
+        .pollito-card.is-pirate { border-color: #f87171; background-color: #fef2f2; }
+
+        input {
+            background-color: #f1f5f9; border: 2px solid #cbd5e1; border-radius: 6px;
+            padding: 4px 8px; font-weight: bold; color: #334155; transition: border-color 0.2s;
+        }
+        input:focus { outline: none; border-color: #3b82f6; }
+        input[type=number] { text-align: center; font-family: monospace; font-weight: 900; }
+
+        /* Ticker de Noticias */
+        #ticker-container {
+            position: absolute; bottom: 0; left: 0; width: 100%; height: 35px;
+            background: rgba(0,0,0,0.8); color: white; border-top: 2px solid #fbbf24;
+            display: flex; align-items: center; overflow: hidden; z-index: 10;
+        }
+        .ticker-text {
+            white-space: nowrap; font-weight: 900; font-size: 16px;
+            animation: scrollTicker 20s linear infinite; padding-left: 100%;
+        }
+        @keyframes scrollTicker { 0% { transform: translateX(0); } 100% { transform: translateX(-100%); } }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #fff9e6; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    </style>
+</head>
+<body class="flex flex-col lg:flex-row w-full h-screen">
+
+    <!-- ÁREA DEL JUEGO -->
+    <div class="flex-1 relative order-1 lg:order-1 h-[55%] lg:h-full" id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ticker-container"><div class="ticker-text" id="ticker-content">Cargando noticias...</div></div>
+    </div>
+
+    <!-- PANEL DE CONTROL -->
+    <div class="w-full lg:w-[450px] control-panel flex flex-col order-2 lg:order-2 h-[45%] lg:h-full z-20">
+        <div class="p-4 border-b-4 border-slate-200 bg-white sticky top-0 z-20">
+            <div class="flex justify-between items-end mb-4">
+                <h2 class="text-2xl font-black text-slate-800">🏁 Gran Carrera</h2>
+                <div class="flex flex-col items-end">
+                    <label class="text-xs font-bold text-slate-500 uppercase">Meta (Ventas)</label>
+                    <input type="number" id="global-goal" value="50" class="w-24 text-lg border-amber-400 bg-amber-50" oninput="updateGoal(this.value)">
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <button id="btn-add" class="btn-add flex-1 rounded-xl py-2 font-black uppercase" onclick="addPollito()">➕ Agregar</button>
+                <button class="bg-red-200 text-red-800 border-2 border-red-400 rounded-xl px-3 font-bold" onclick="clearAll()">Borrar</button>
+            </div>
+        </div>
+        
+        <div class="flex-1 overflow-auto p-4 flex flex-col gap-3" id="pollito-list">
+            <div id="empty-state" class="text-center p-10 text-slate-400 font-bold hidden">La pista está vacía.</div>
+        </div>
+    </div>
+
+    <script>
+        const MAX_PLAYERS = 20;
+        let pollitos = [];
+        let idCounter = 1;
+        let globalGoal = 50;
+        
+        // Estado derivado
+        let currentMaxSales = 0;
+        let currentAvgSales = 0;
+        let teamProgress = 0; // 0.0 to 1.0+
+        let top3Ids = [];
+        
+        // Efectos
+        let confetti = [];
+        let eventMessage = "";
+        let eventTimer = 0;
+
+        // Elementos DOM
+        const listContainer = document.getElementById('pollito-list');
+        const emptyState = document.getElementById('empty-state');
+        const btnAdd = document.getElementById('btn-add');
+        const goalInput = document.getElementById('global-goal');
+        const tickerContent = document.getElementById('ticker-content');
+        
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('game-container');
+
+        // Nubes Parallax
+        let clouds = Array.from({length: 12}, () => ({
+            x: Math.random() * 2000, y: Math.random() * 250,
+            s: 0.2 + Math.random() * 0.5, sc: 0.5 + Math.random() * 1.5
+        }));
+
+        let balloons = Array.from({length: 5}, () => ({
+            x: Math.random() * 2000, y: canvas.height + Math.random()*500,
+            s: 0.5 + Math.random(), c: `hsl(${Math.random()*360}, 80%, 60%)`
+        }));
+
+        // --- PERSISTENCIA ---
+        function saveState() {
+            const data = pollitos.map(p => ({ id: p.id, n: p.nombre, m: p.vMovil, h: p.vHogar, c: p.calidad }));
+            localStorage.setItem('carreraUltData', JSON.stringify(data));
+            localStorage.setItem('carreraUltId', idCounter);
+            localStorage.setItem('carreraUltGoal', globalGoal);
+        }
+
+        function loadState() {
+            try {
+                globalGoal = parseInt(localStorage.getItem('carreraUltGoal')) || 50;
+                goalInput.value = globalGoal;
+                
+                const savedData = localStorage.getItem('carreraUltData');
+                if (savedData) {
+                    const parsed = JSON.parse(savedData);
+                    idCounter = parseInt(localStorage.getItem('carreraUltId')) || 1;
+                    parsed.forEach(d => {
+                        const p = initPollito(d.id, d.n, d.m, d.h, d.c);
+                        pollitos.push(p);
+                        createPollitoDOM(p);
+                    });
+                    updateCalculations(true);
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function clearAll() {
+            if(confirm("¿Borrar todo?")) {
+                pollitos = []; idCounter = 1; listContainer.innerHTML = '';
+                listContainer.appendChild(emptyState);
+                updateCalculations(); saveState();
+            }
+        }
+
+        // --- LÓGICA DE DATOS ---
+        function initPollito(id, n, m, h, c) {
+            return {
+                id, nombre: n || `A-${id}`, vMovil: m||0, vHogar: h||0, calidad: c??100,
+                currentX: 50, targetX: 50, totalVentas: 0, score: 0, 
+                isTop3: false, isFire: false, isLowAvg: false, isLowCal: false
+            };
+        }
+
+        function addPollito() {
+            if (pollitos.length >= MAX_PLAYERS) return;
+            const p = initPollito(idCounter++, `Asesor ${pollitos.length + 1}`, 0, 0, 100);
+            pollitos.push(p); createPollitoDOM(p);
+            updateCalculations(); saveState();
+        }
+
+        function removePollito(id) {
+            pollitos = pollitos.filter(p => p.id !== id);
+            const card = document.getElementById(`card-${id}`);
+            if (card) card.remove();
+            updateCalculations(); saveState();
+        }
+
+        function updateGoal(val) {
+            globalGoal = Math.max(1, parseInt(val) || 50);
+            updateCalculations(); saveState();
+        }
+
+        window.updateData = function(id, field, val) {
+            const p = pollitos.find(x => x.id === id);
+            if (!p) return;
+            if (field === 'nombre') p.nombre = val;
+            else {
+                let num = parseInt(val) || 0;
+                if(field === 'calidad') num = Math.max(0, Math.min(100, num));
+                p[field] = num;
+            }
+            updateCalculations(); saveState();
+        }
+
+        function triggerEvent(msg) {
+            eventMessage = msg;
+            eventTimer = 180; // 3 seconds at 60fps
+            // Trigger Confetti
+            confetti = [];
+            for(let i=0; i<100; i++) {
+                confetti.push({
+                    x: canvas.width/2, y: canvas.height/4,
+                    vx: (Math.random()-0.5)*15, vy: (Math.random()-1)*15,
+                    c: `hsl(${Math.random()*360}, 100%, 50%)`,
+                    s: Math.random()*10+5
+                });
+            }
+        }
+
+        function generateTickerNews() {
+            if(pollitos.length === 0) return "Esperando corredores...";
+            let news = [];
+            news.push(`🏆 Meta actual: ${globalGoal} ventas.`);
+            
+            const fire = pollitos.filter(p => p.isFire);
+            if(fire.length > 0) news.push(`🔥 ¡${fire[0].nombre} está IMPARABLE con 100% de calidad!`);
+            
+            const lowAvg = pollitos.filter(p => p.isLowAvg);
+            if(lowAvg.length > 0) news.push(`🦊 El zorrito le pisa los talones a ${lowAvg[0].nombre}.`);
+            
+            const lowCal = pollitos.filter(p => p.isLowCal);
+            if(lowCal.length > 0) news.push(`🐔 La gallina enojada persigue a ${lowCal[0].nombre} por baja calidad.`);
+
+            if(teamProgress > 0.7) news.push(`🎉 ¡EL EQUIPO ESTÁ VOLANDO! Progreso superior al 70%.`);
+            else if(teamProgress < 0.3) news.push(`☁️ Tiempos difíciles... el equipo necesita un empujón.`);
+
+            return "⚡ " + news.join(" ⚡ ") + " ⚡";
+        }
+
+        function updateCalculations(isInit = false) {
+            btnAdd.disabled = pollitos.length >= MAX_PLAYERS;
+            emptyState.style.display = pollitos.length === 0 ? 'block' : 'none';
+
+            let totalSum = 0; currentMaxSales = 0;
+            pollitos.forEach(p => {
+                p.totalVentas = p.vMovil + p.vHogar;
+                p.score = p.totalVentas * (p.calidad / 100);
+                totalSum += p.totalVentas;
+                if (p.totalVentas > currentMaxSales) currentMaxSales = p.totalVentas;
+            });
+
+            currentAvgSales = pollitos.length ? totalSum / pollitos.length : 0;
+            teamProgress = pollitos.length ? totalSum / (globalGoal * pollitos.length) : 0;
+
+            const sorted = [...pollitos].sort((a,b) => b.score - a.score);
+            const newTop3 = sorted.filter(p => p.score > 0).slice(0,3).map(p => p.id);
+
+            // Check if top 3 changed for confetti event
+            if (!isInit && pollitos.length > 0) {
+                const oldTopStr = top3Ids.join(',');
+                const newTopStr = newTop3.join(',');
+                if (oldTopStr !== newTopStr && newTop3.length > 0) {
+                    const top1 = sorted[0];
+                    if(top3Ids[0] !== newTop3[0]) triggerEvent(`¡${top1.nombre} TOMA EL LIDERAZGO!`);
+                    else triggerEvent("¡CAMBIO EN EL TOP 3!");
+                }
+            }
+            top3Ids = newTop3;
+
+            pollitos.forEach(p => {
+                const isLeader = p.id === top3Ids[0];
+                p.isTop3 = top3Ids.includes(p.id);
+                p.isFire = p.calidad === 100 && p.totalVentas >= (globalGoal * 0.5) && p.score > 0;
+                p.isLowAvg = pollitos.length > 1 && p.totalVentas < currentAvgSales;
+                p.isLowCal = p.calidad < 60;
+
+                // Actualizar UI Card
+                const card = document.getElementById(`card-${p.id}`);
+                if (card) {
+                    card.className = `pollito-card p-2 flex flex-col gap-1 relative ${p.isTop3?'is-top':(p.isLowCal?'is-pirate':'')}`;
+                    const icon = card.querySelector('.hat-icon');
+                    if(icon) icon.innerText = p.isTop3 ? '🦖' : (p.isLowCal ? '🏴‍☠️' : '🐥');
+                }
+            });
+
+            tickerContent.innerText = generateTickerNews();
+        }
+
+        // --- UI GENERATOR ---
+        function createPollitoDOM(p) {
+            const div = document.createElement('div');
+            div.className = 'pollito-card p-2 flex flex-col gap-1 relative'; div.id = `card-${p.id}`;
+            div.innerHTML = `
+                <div class="flex justify-between items-center gap-2">
+                    <span class="text-xl hat-icon">🐥</span>
+                    <input type="text" value="${p.nombre}" class="flex-1 text-sm" placeholder="Nombre" oninput="updateData(${p.id}, 'nombre', this.value)">
+                    <button class="bg-red-500 text-white rounded w-6 h-6 flex items-center justify-center font-bold text-xs" onclick="removePollito(${p.id})">X</button>
+                </div>
+                <div class="flex gap-1">
+                    <div class="flex-1 flex flex-col"><label class="text-[9px] font-black text-slate-500">Móvil</label><input type="number" value="${p.vMovil}" oninput="updateData(${p.id}, 'vMovil', this.value)"></div>
+                    <div class="flex-1 flex flex-col"><label class="text-[9px] font-black text-slate-500">Hogar</label><input type="number" value="${p.vHogar}" oninput="updateData(${p.id}, 'vHogar', this.value)"></div>
+                    <div class="flex-1 flex flex-col"><label class="text-[9px] font-black text-slate-500">Cal %</label><input type="number" value="${p.calidad}" oninput="updateData(${p.id}, 'calidad', this.value)"></div>
+                </div>
+            `;
+            listContainer.appendChild(div);
+        }
+
+        // --- RENDERIZADO CANVAS ---
+        function resizeCanvas() {
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function drawBackground() {
+            // Clima
+            let sky = '#5c94fc'; // Normal
+            if(teamProgress < 0.3) sky = '#94a3b8'; // Gris (Mal)
+            if(teamProgress > 0.7) sky = '#38bdf8'; // Brillante (Muy bien)
+            
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Nubes
+            ctx.fillStyle = teamProgress < 0.3 ? 'rgba(200,200,200,0.8)' : 'rgba(255, 255, 255, 0.8)';
+            clouds.forEach(c => {
+                c.x -= c.s; if(c.x < -150) c.x = canvas.width + 100;
+                ctx.beginPath(); ctx.arc(c.x, c.y, 30*c.sc, 0, Math.PI*2);
+                ctx.arc(c.x+35*c.sc, c.y-15*c.sc, 40*c.sc, 0, Math.PI*2);
+                ctx.arc(c.x+70*c.sc, c.y, 30*c.sc, 0, Math.PI*2); ctx.fill();
+            });
+
+            // Globos si van muy bien
+            if(teamProgress > 0.7) {
+                balloons.forEach(b => {
+                    b.y -= b.s; if(b.y < -100) { b.y = canvas.height + 100; b.x = Math.random()*canvas.width; }
+                    ctx.fillStyle = b.c; ctx.beginPath(); ctx.ellipse(b.x, b.y, 15, 20, 0, 0, Math.PI*2); ctx.fill();
+                    ctx.beginPath(); ctx.moveTo(b.x, b.y+20); ctx.lineTo(b.x-3, b.y+25); ctx.lineTo(b.x+3, b.y+25); ctx.fill();
+                    ctx.strokeStyle='white'; ctx.beginPath(); ctx.moveTo(b.x, b.y+25); ctx.lineTo(b.x, b.y+40); ctx.stroke();
+                });
+            }
+        }
+
+        let bgOffset = 0;
+        function drawGame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawBackground();
+
+            if (pollitos.length === 0) {
+                ctx.fillStyle = 'white'; ctx.font = '900 24px Nunito'; ctx.textAlign = 'center';
+                ctx.fillText('¡Esperando asesores!', canvas.width/2, canvas.height/2);
+                requestAnimationFrame(drawGame); return;
+            }
+
+            const topMargin = 50; const bottomMargin = 40; // Espacio para el ticker
+            const laneHeight = (canvas.height - topMargin - bottomMargin) / pollitos.length;
+            const startX = 60; const finishX = canvas.width - 120;
+            const trackW = finishX - startX;
+            
+            bgOffset -= 1; if(bgOffset <= -40) bgOffset = 0;
+
+            // Castillo Meta
+            ctx.fillStyle = '#94a3b8';
+            ctx.fillRect(finishX, topMargin, 60, canvas.height);
+            ctx.fillStyle = '#475569';
+            for(let i=0; i<canvas.height; i+=40) ctx.fillRect(finishX-10, topMargin+i, 20, 20);
+            ctx.fillStyle = 'white'; ctx.font = '900 16px Nunito';
+            ctx.save(); ctx.translate(finishX+30, canvas.height/2); ctx.rotate(-Math.PI/2);
+            ctx.textAlign = 'center'; ctx.fillText(`META: ${globalGoal}`, 0, 0); ctx.restore();
+
+            pollitos.forEach((p, i) => {
+                const gY = topMargin + (i+1)*laneHeight - 10;
+                
+                // Carril
+                ctx.fillStyle = '#22c55e'; ctx.fillRect(0, gY, canvas.width, laneHeight*0.2);
+                ctx.fillStyle = '#16a34a'; for(let x=bgOffset; x<canvas.width; x+=40) ctx.fillRect(x, gY, 10, laneHeight*0.1);
+                ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth=1;
+                ctx.beginPath(); ctx.moveTo(0, gY); ctx.lineTo(canvas.width, gY); ctx.stroke();
+
+                // Físicas Lerp
+                const perc = Math.min(p.totalVentas / globalGoal, 1);
+                p.targetX = startX + (perc * trackW);
+                p.currentX += (p.targetX - p.currentX) * 0.05;
+                const px = p.currentX; const py = gY - 5;
+                const fSz = Math.max(18, Math.min(35, laneHeight * 0.7));
+
+                // Tubo Verde (Ventas muy bajas vs líder)
+                if (currentMaxSales >= 5 && p.totalVentas < (currentMaxSales * 0.4)) {
+                    ctx.fillStyle = '#15803d'; ctx.strokeStyle = 'black'; ctx.lineWidth = 2;
+                    ctx.fillRect(px + 70, gY - 40, 30, 40); ctx.strokeRect(px + 70, gY - 40, 30, 40);
+                    ctx.fillRect(px + 66, gY - 40, 38, 15); ctx.strokeRect(px + 66, gY - 40, 38, 15);
+                }
+
+                ctx.font = `${fSz}px Arial`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+                
+                // Mascotas Castigo
+                let offset = 45;
+                if(p.isLowCal) {
+                    ctx.save(); ctx.translate(px-offset, py); ctx.scale(-1,1); ctx.fillText('🐔', 0,0); ctx.restore();
+                    offset += 40;
+                }
+                if(p.isLowAvg) {
+                    ctx.save(); ctx.translate(px-offset, py); ctx.scale(-1,1); ctx.fillText('🦊', 0,0); ctx.restore();
+                }
+
+                // Cohete Fire
+                if(p.isFire) {
+                    ctx.fillText('🚀', px - 25, py - fSz*0.2);
+                    ctx.fillStyle = `rgba(255, ${Math.random()*150 + 50}, 0, 0.8)`;
+                    ctx.beginPath(); ctx.arc(px-40, py-fSz*0.5, Math.random()*10+5, 0, Math.PI*2); ctx.fill();
+                }
+
+                // Personaje Principal (Dino o Pollito)
+                ctx.fillText(p.isTop3 ? '🦖' : '🐥', px, py);
+                if(p.isTop3) ctx.fillText('👑', px, py - fSz + 5);
+                if(p.calidad < 60) ctx.fillText('🏴‍☠️', px, py - fSz + 5);
+
+                // Nombre
+                ctx.font = '900 13px Nunito'; ctx.textAlign='left'; ctx.textBaseline='middle';
+                const ny = py - fSz/2;
+                ctx.lineWidth = 3; ctx.strokeStyle = 'black'; ctx.strokeText(p.nombre, px + fSz/2 + 5, ny);
+                ctx.fillStyle = p.isTop3 ? '#facc15' : 'white'; ctx.fillText(p.nombre, px + fSz/2 + 5, ny);
+                
+                // Progreso Vts
+                ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 10px Nunito';
+                ctx.fillText(`${p.totalVentas}/${globalGoal}`, px + fSz/2 + 5, ny + 12);
+            });
+
+            // Banner Top 3
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,canvas.width, 35);
+            ctx.fillStyle = '#facc15'; ctx.font = '900 16px Nunito'; ctx.textAlign='left'; ctx.textBaseline='middle';
+            ctx.fillText('👑 TOP 3:', 10, 18);
+            
+            const topRanked = [...pollitos].filter(p => p.score > 0).sort((a,b) => b.score - a.score).slice(0,3);
+            let tx = 90;
+            topRanked.forEach((p, i) => {
+                ctx.fillStyle = i===0 ? '#fde047' : i===1 ? '#e2e8f0' : '#fba94c';
+                const txt = `${i+1}. 🦖 ${p.nombre} (${p.score.toFixed(0)})`;
+                ctx.fillText(txt, tx, 18);
+                tx += ctx.measureText(txt).width + 20;
+            });
+
+            // Evento Mensaje y Confeti
+            if(eventTimer > 0) {
+                ctx.fillStyle = `rgba(0,0,0,${Math.min(0.5, eventTimer/60)})`; ctx.fillRect(0,0,canvas.width,canvas.height);
+                ctx.fillStyle = (eventTimer%10 < 5) ? '#fbbf24' : 'white';
+                ctx.font = '900 40px Nunito'; ctx.textAlign='center';
+                ctx.lineWidth=6; ctx.strokeStyle='black';
+                ctx.strokeText(eventMessage, canvas.width/2, canvas.height/2);
+                ctx.fillText(eventMessage, canvas.width/2, canvas.height/2);
+                
+                confetti.forEach(c => {
+                    c.x += c.vx; c.y += c.vy; c.vy += 0.5; // Gravedad
+                    ctx.fillStyle = c.c; ctx.fillRect(c.x, c.y, c.s, c.s);
+                });
+                eventTimer--;
+            }
+
+            requestAnimationFrame(drawGame);
+        }
+
+        window.onload = () => { resizeCanvas(); loadState(); requestAnimationFrame(drawGame); };
+    </script>
+</body>
+</html>
